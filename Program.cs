@@ -2,27 +2,36 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Net.Sockets;
 
-Console.Write("Your peer ID (e.g. alice): ");
+// Auto-configuration
+const string serverUrl = "https://p2psignalserver.onrender.com/";
+const int localPort = 6000;
+var currentInput = "";
+
+Console.Write("Enter your username: ");
 var myId = Console.ReadLine()!.Trim();
 
-Console.Write("Signaling server URL (default http://localhost:5000): ");
-var serverUrl = Console.ReadLine();
-if (string.IsNullOrWhiteSpace(serverUrl))
-    serverUrl = "http://localhost:5000";
-
-Console.Write("Local UDP port to listen on (e.g. 6000): ");
-var portStr = Console.ReadLine();
-var localPort = int.Parse(portStr!);
+if (string.IsNullOrWhiteSpace(myId))
+{
+    Console.WriteLine("Username cannot be empty.");
+    return;
+}
 
 // Start UDP listener
 var udp = new UdpClient(localPort);
-Console.WriteLine($"Listening on UDP {localPort}...");
+Console.WriteLine($"\n{DarkGrey("Connecting to chat server...")}\n");
 
 // Register with signaling server
 var http = new HttpClient { BaseAddress = new Uri(serverUrl) };
-await http.PostAsJsonAsync("/register", new PeerInfo { PeerId = myId, Port = localPort });
-
-Console.WriteLine($"Registered as {myId}. Connected to group chat!");
+try
+{
+    await http.PostAsJsonAsync("/register", new PeerInfo { PeerId = myId, Port = localPort });
+    Console.WriteLine($"{Blue($"Connected as {Green(myId)}")}\n");
+}
+catch (Exception ex)
+{
+    Console.WriteLine($"{Red($"Failed to connect: {ex.Message}")}");
+    return;
+}
 
 // Start receive loop
 _ = Task.Run(async () =>
@@ -31,8 +40,17 @@ _ = Task.Run(async () =>
     {
         var result = await udp.ReceiveAsync();
         var msg = System.Text.Encoding.UTF8.GetString(result.Buffer);
-        Console.WriteLine($"\n[UDP: {result.RemoteEndPoint}] {msg}");
-        Console.Write("> ");
+        
+        // Save cursor position, clear current line
+        var savedInput = currentInput;
+        var clearLine = "\r" + new string(' ', Math.Min(Console.WindowWidth - 1, savedInput.Length + 10)) + "\r";
+        
+        // Display the incoming message
+        Console.Write(clearLine);
+        Console.WriteLine(msg);
+        
+        // Restore prompt and current input
+        Console.Write($"{DarkGrey(">")} {savedInput}");
     }
 });
 
@@ -40,21 +58,48 @@ _ = Task.Run(async () =>
 
 
 
-Console.WriteLine("Group chat ready! Type messages to broadcast, or use commands:");
-Console.WriteLine("  /help - Show server commands");
-Console.WriteLine("  /list - List all users");
-Console.WriteLine("  /quit - Exit chat");
+Console.WriteLine($"{DarkGrey("Available commands: /help, /list, /quit")}");
+Console.WriteLine();
+
 while (true)
 {
-    Console.Write("> ");
-    var line = Console.ReadLine();
+    Console.Write($"{DarkGrey(">")} ");
+    currentInput = "";
+    
+    // Read input character by character to track current input
+    while (true)
+    {
+        var key = Console.ReadKey(intercept: true);
+        
+        if (key.Key == ConsoleKey.Enter)
+        {
+            Console.WriteLine();
+            break;
+        }
+        else if (key.Key == ConsoleKey.Backspace)
+        {
+            if (currentInput.Length > 0)
+            {
+                currentInput = currentInput[..^1];
+                Console.Write("\b \b");
+            }
+        }
+        else if (!char.IsControl(key.KeyChar))
+        {
+            currentInput += key.KeyChar;
+            Console.Write(key.KeyChar);
+        }
+    }
+    
+    var line = currentInput;
+    
     if (string.IsNullOrWhiteSpace(line))
         continue;
 
     if (line.Equals("/quit", StringComparison.OrdinalIgnoreCase))
     {
         await http.PostAsJsonAsync("/disconnect", new DisconnectRequest { PeerId = myId });
-        Console.WriteLine("Disconnected from chat.");
+        Console.WriteLine($"\n{Blue("Disconnected from chat.")}\n");
         break;
     }
 
@@ -72,12 +117,12 @@ while (true)
             var cmdResponse = await response.Content.ReadFromJsonAsync<CommandResponse>();
             if (cmdResponse != null)
             {
-                Console.WriteLine($"[Server{(string.IsNullOrEmpty(cmdResponse.Person) ? "" : $"/{cmdResponse.Person}")}] {cmdResponse.Message}");
+                Console.WriteLine($"{Blue($"[Server] {cmdResponse.Message}")}");
             }
         }
         else
         {
-            Console.WriteLine($"[Error] Server returned {response.StatusCode}");
+            Console.WriteLine($"{Red($"Error: Server returned {response.StatusCode}")}");
         }
     }
     else
@@ -91,21 +136,22 @@ while (true)
             var result = await broadcastResp.Content.ReadFromJsonAsync<BroadcastResponse>();
             if (result != null && result.Recipients.Count > 0)
             {
-                var messageBytes = System.Text.Encoding.UTF8.GetBytes($"[{myId}] {line}");
+                var messageBytes = System.Text.Encoding.UTF8.GetBytes($"{Green(myId)}: {line}");
                 foreach (var peer in result.Recipients)
                 {
                     var peerEndpoint = new IPEndPoint(IPAddress.Parse(peer.Ip!), peer.Port);
                     await udp.SendAsync(messageBytes, messageBytes.Length, peerEndpoint);
                 }
-                Console.WriteLine($"[Sent to {result.Recipients.Count} user(s)]");
-            }
-            else
-            {
-                Console.WriteLine("[No other users online]");
             }
         }
     }
 }
+
+// Color helpers
+static string Green(string text) => $"\x1b[32m{text}\x1b[0m";
+static string Blue(string text) => $"\x1b[34m{text}\x1b[0m";
+static string DarkGrey(string text) => $"\x1b[90m{text}\x1b[0m";
+static string Red(string text) => $"\x1b[31m{text}\x1b[0m";
 
 public class PeerInfo
 {
