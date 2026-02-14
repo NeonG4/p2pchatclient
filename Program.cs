@@ -4,8 +4,10 @@ using System.Net.Sockets;
 
 // Auto-configuration
 const string serverUrl = "https://p2psignalserver.onrender.com/";
-const int localPort = 6000;
+var localPort = 6000;
 var currentInput = "";
+var udp = new UdpClient(localPort);
+var udpLock = new object();
 
 Console.Write("Enter your username: ");
 var myId = Console.ReadLine()!.Trim();
@@ -16,8 +18,6 @@ if (string.IsNullOrWhiteSpace(myId))
     return;
 }
 
-// Start UDP listener
-var udp = new UdpClient(localPort);
 Console.WriteLine($"\n{DarkGrey("Connecting to chat server...")}\n");
 
 // Register with signaling server
@@ -38,19 +38,37 @@ _ = Task.Run(async () =>
 {
     while (true)
     {
-        var result = await udp.ReceiveAsync();
-        var msg = System.Text.Encoding.UTF8.GetString(result.Buffer);
-        
-        // Save cursor position, clear current line
-        var savedInput = currentInput;
-        var clearLine = "\r" + new string(' ', Math.Min(Console.WindowWidth - 1, savedInput.Length + 10)) + "\r";
-        
-        // Display the incoming message
-        Console.Write(clearLine);
-        Console.WriteLine(msg);
-        
-        // Restore prompt and current input
-        Console.Write($"{DarkGrey(">")} {savedInput}");
+        try
+        {
+            UdpClient currentUdp;
+            lock (udpLock)
+            {
+                currentUdp = udp;
+            }
+            
+            var result = await currentUdp.ReceiveAsync();
+            var msg = System.Text.Encoding.UTF8.GetString(result.Buffer);
+            
+            // Save cursor position, clear current line
+            var savedInput = currentInput;
+            var clearLine = "\r" + new string(' ', Math.Min(Console.WindowWidth - 1, savedInput.Length + 10)) + "\r";
+            
+            // Display the incoming message
+            Console.Write(clearLine);
+            Console.WriteLine(msg);
+            
+            // Restore prompt and current input
+            Console.Write($"{DarkGrey(">")} {savedInput}");
+        }
+        catch (ObjectDisposedException)
+        {
+            // UDP client was disposed during port change, wait a bit and continue
+            await Task.Delay(100);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"\n{Red($"Error receiving message: {ex.Message}")}");
+        }
     }
 });
 
@@ -58,7 +76,7 @@ _ = Task.Run(async () =>
 
 
 
-Console.WriteLine($"{DarkGrey("Available commands: /help, /list, /quit")}");
+Console.WriteLine($"{DarkGrey("Type /help for commands")}");
 Console.WriteLine();
 
 while (true)
@@ -109,6 +127,49 @@ while (true)
         var command = parts[0];
         var body = parts.Length > 1 ? parts[1] : "";
 
+        // Handle /say command locally (send as regular message)
+        if (command.Equals("/say", StringComparison.OrdinalIgnoreCase))
+        {
+            if (string.IsNullOrWhiteSpace(body))
+            {
+                Console.WriteLine($"{DarkGrey("[Usage: /say <message>]")}");
+                continue;
+            }
+            
+            // Treat as regular message
+            var broadcastReq = new BroadcastRequest { FromPeerId = myId, Message = body };
+            var broadcastResp = await http.PostAsJsonAsync("/broadcast", broadcastReq);
+            
+            if (broadcastResp.IsSuccessStatusCode)
+            {
+                var result = await broadcastResp.Content.ReadFromJsonAsync<BroadcastResponse>();
+                if (result != null && result.Recipients.Count > 0)
+                {
+                    var messageBytes = System.Text.Encoding.UTF8.GetBytes($"{Green(myId)}: {body}");
+                    
+                    UdpClient currentUdp;
+                    lock (udpLock)
+                    {
+                        currentUdp = udp;
+                    }
+                    
+                    foreach (var peer in result.Recipients)
+                    {
+                        try
+                        {
+                            var peerEndpoint = new IPEndPoint(IPAddress.Parse(peer.Ip!), peer.Port);
+                            await currentUdp.SendAsync(messageBytes, messageBytes.Length, peerEndpoint);
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"{Red($"Failed to send to {peer.PeerId}: {ex.Message}")}");
+                        }
+                    }
+                }
+            }
+            continue;
+        }
+
         var cmdRequest = new CommandRequest { Command = command, Body = body, PeerId = myId };
         var response = await http.PostAsJsonAsync("/command", cmdRequest);
         
@@ -117,7 +178,41 @@ while (true)
             var cmdResponse = await response.Content.ReadFromJsonAsync<CommandResponse>();
             if (cmdResponse != null)
             {
-                Console.WriteLine($"{Blue($"[Server] {cmdResponse.Message}")}");
+                Console.WriteLine($"{DarkGrey(cmdResponse.Message)}");
+                
+                // Handle port change
+                if (command.Equals("/ipconfig", StringComparison.OrdinalIgnoreCase) && 
+                    body.StartsWith("setport", StringComparison.OrdinalIgnoreCase))
+                {
+                    var portParts = body.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+                    if (portParts.Length >= 2 && int.TryParse(portParts[1], out var newPort))
+                    {
+                        try
+                        {
+                            // Create new UDP client on new port
+                            var newUdp = new UdpClient(newPort);
+                            
+                            // Swap the UDP client
+                            UdpClient oldUdp;
+                            lock (udpLock)
+                            {
+                                oldUdp = udp;
+                                udp = newUdp;
+                                localPort = newPort;
+                            }
+                            
+                            // Dispose old UDP client
+                            oldUdp.Close();
+                            oldUdp.Dispose();
+                            
+                            Console.WriteLine($"{DarkGrey($"Now listening on port {newPort}")}");
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"{Red($"Failed to change port: {ex.Message}")}");
+                        }
+                    }
+                }
             }
         }
         else
@@ -137,10 +232,24 @@ while (true)
             if (result != null && result.Recipients.Count > 0)
             {
                 var messageBytes = System.Text.Encoding.UTF8.GetBytes($"{Green(myId)}: {line}");
+                
+                UdpClient currentUdp;
+                lock (udpLock)
+                {
+                    currentUdp = udp;
+                }
+                
                 foreach (var peer in result.Recipients)
                 {
-                    var peerEndpoint = new IPEndPoint(IPAddress.Parse(peer.Ip!), peer.Port);
-                    await udp.SendAsync(messageBytes, messageBytes.Length, peerEndpoint);
+                    try
+                    {
+                        var peerEndpoint = new IPEndPoint(IPAddress.Parse(peer.Ip!), peer.Port);
+                        await currentUdp.SendAsync(messageBytes, messageBytes.Length, peerEndpoint);
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"{Red($"Failed to send to {peer.PeerId}: {ex.Message}")}");
+                    }
                 }
             }
         }
