@@ -9,7 +9,6 @@ Console.Title = "Chat";
 const string serverUrl = "https://p2psignalserver.onrender.com/";
 const int localPort = 6000;
 var currentInput = "";
-var udp = new UdpClient(localPort);
 
 Console.Write("Enter your username: ");
 var myId = Console.ReadLine()!.Trim();
@@ -99,6 +98,38 @@ try
     }
     
     Console.WriteLine($"{Blue($"Connected as {Green(myId)}")}\n");
+
+    // Start listening for server-relayed messages
+    _ = Task.Run(async () =>
+    {
+        try
+        {
+            using var relayClient = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
+            var stream = await relayClient.GetStreamAsync($"{serverUrl}messages/{myId}");
+            using var reader = new StreamReader(stream);
+
+            while (!reader.EndOfStream)
+            {
+                var line = await reader.ReadLineAsync();
+                if (line?.StartsWith("data: ") == true)
+                {
+                    var message = line.Substring(6); // Remove "data: " prefix
+
+                    // Clear current line, display message, redisplay prompt
+                    var savedInput = currentInput;
+                    var clearLine = "\r" + new string(' ', Math.Min(Console.WindowWidth - 1, savedInput.Length + 10)) + "\r";
+
+                    Console.Write(clearLine);
+                    Console.WriteLine($"{Green(message.Split(':')[0])}: {string.Join(":", message.Split(':').Skip(1))}");
+                    Console.Write($"{DarkGrey(">")} {savedInput}");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"\n{Red($"Message relay error: {ex.Message}")}");
+        }
+    });
 }
 catch (Exception ex)
 {
@@ -106,33 +137,6 @@ catch (Exception ex)
     return;
 }
 
-// Start receive loop
-_ = Task.Run(async () =>
-{
-    while (true)
-    {
-        try
-        {
-            var result = await udp.ReceiveAsync();
-            var msg = System.Text.Encoding.UTF8.GetString(result.Buffer);
-            
-            // Save cursor position, clear current line
-            var savedInput = currentInput;
-            var clearLine = "\r" + new string(' ', Math.Min(Console.WindowWidth - 1, savedInput.Length + 10)) + "\r";
-            
-            // Display the incoming message
-            Console.Write(clearLine);
-            Console.WriteLine(msg);
-            
-            // Restore prompt and current input
-            Console.Write($"{DarkGrey(">")} {savedInput}");
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"\n{Red($"Error receiving message: {ex.Message}")}");
-        }
-    }
-});
 
 
 
@@ -197,32 +201,10 @@ while (true)
                 Console.WriteLine($"{DarkGrey("[Usage: /say <message>]")}");
                 continue;
             }
-            
-            // Treat as regular message
+
+            // Send message to server for relay
             var broadcastReq = new BroadcastRequest { FromPeerId = myId, Message = body };
-            var broadcastResp = await http.PostAsJsonAsync("/broadcast", broadcastReq);
-            
-            if (broadcastResp.IsSuccessStatusCode)
-            {
-                var result = await broadcastResp.Content.ReadFromJsonAsync<BroadcastResponse>();
-                if (result != null && result.Recipients.Count > 0)
-                {
-                    var messageBytes = System.Text.Encoding.UTF8.GetBytes($"{Green(myId)}: {body}");
-                    
-                    foreach (var peer in result.Recipients)
-                    {
-                        try
-                        {
-                            var peerEndpoint = new IPEndPoint(IPAddress.Parse(peer.Ip!), peer.Port);
-                            await udp.SendAsync(messageBytes, messageBytes.Length, peerEndpoint);
-                        }
-                        catch (Exception ex)
-                        {
-                            Console.WriteLine($"{Red($"Failed to send to {peer.PeerId}: {ex.Message}")}");
-                        }
-                    }
-                }
-            }
+            await http.PostAsJsonAsync("/broadcast", broadcastReq);
             continue;
         }
 
@@ -244,31 +226,9 @@ while (true)
     }
     else
     {
-        // Broadcast to all peers
+        // Send message to server for relay
         var broadcastReq = new BroadcastRequest { FromPeerId = myId, Message = line };
-        var broadcastResp = await http.PostAsJsonAsync("/broadcast", broadcastReq);
-        
-        if (broadcastResp.IsSuccessStatusCode)
-        {
-            var result = await broadcastResp.Content.ReadFromJsonAsync<BroadcastResponse>();
-            if (result != null && result.Recipients.Count > 0)
-            {
-                var messageBytes = System.Text.Encoding.UTF8.GetBytes($"{Green(myId)}: {line}");
-                
-                foreach (var peer in result.Recipients)
-                {
-                    try
-                    {
-                        var peerEndpoint = new IPEndPoint(IPAddress.Parse(peer.Ip!), peer.Port);
-                        await udp.SendAsync(messageBytes, messageBytes.Length, peerEndpoint);
-                    }
-                    catch (Exception ex)
-                    {
-                        Console.WriteLine($"{Red($"Failed to send to {peer.PeerId}: {ex.Message}")}");
-                    }
-                }
-            }
-        }
+        await http.PostAsJsonAsync("/broadcast", broadcastReq);
     }
 }
 
