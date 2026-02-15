@@ -20,6 +20,15 @@ if (string.IsNullOrWhiteSpace(myId))
     return;
 }
 
+Console.Write("Enter your email: ");
+var email = Console.ReadLine()!.Trim();
+
+if (string.IsNullOrWhiteSpace(email))
+{
+    Console.WriteLine("Email cannot be empty.");
+    return;
+}
+
 Console.Write("Enter your password: ");
 var password = "";
 {
@@ -54,13 +63,33 @@ Console.WriteLine($"\n{DarkGrey("Connecting to chat server...")}\n");
 var http = new HttpClient { BaseAddress = new Uri(serverUrl) };
 try
 {
-    var registerResponse = await http.PostAsJsonAsync("/register", new PeerInfo { PeerId = myId, Port = localPort, Password = password });
+    var registerResponse = await http.PostAsJsonAsync("/register", new PeerInfo { PeerId = myId, Port = localPort, Password = password, Email = email });
     
     if (!registerResponse.IsSuccessStatusCode)
     {
         if (registerResponse.StatusCode == System.Net.HttpStatusCode.Unauthorized)
         {
             Console.WriteLine($"{Red("Incorrect password. Please try again.")}");
+        }
+        else if ((int)registerResponse.StatusCode == 429)
+        {
+            var errorContent = await registerResponse.Content.ReadAsStringAsync();
+            try
+            {
+                var errorJson = System.Text.Json.JsonDocument.Parse(errorContent);
+                if (errorJson.RootElement.TryGetProperty("Error", out var errorMsg))
+                {
+                    Console.WriteLine($"{Red(errorMsg.GetString()!)}");
+                }
+                else
+                {
+                    Console.WriteLine($"{Red("Too many account creations. Please try again later.")}");
+                }
+            }
+            catch
+            {
+                Console.WriteLine($"{Red("Too many account creations. Please try again later.")}");
+            }
         }
         else
         {
@@ -255,6 +284,7 @@ public class PeerInfo
     public string? Ip { get; set; }
     public int Port { get; set; }
     public string? Password { get; set; }
+    public string? Email { get; set; }
 }
 
 public class CommandRequest
