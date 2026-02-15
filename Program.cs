@@ -70,6 +70,26 @@ try
         {
             Console.WriteLine($"{Red("Incorrect password. Please try again.")}");
         }
+        else if (registerResponse.StatusCode == System.Net.HttpStatusCode.Forbidden)
+        {
+            var errorContent = await registerResponse.Content.ReadAsStringAsync();
+            try
+            {
+                var errorJson = System.Text.Json.JsonDocument.Parse(errorContent);
+                if (errorJson.RootElement.TryGetProperty("Error", out var errorMsg))
+                {
+                    Console.WriteLine($"{Red(errorMsg.GetString()!)}");
+                }
+                else
+                {
+                    Console.WriteLine($"{Red("Your account has been banned.")}");
+                }
+            }
+            catch
+            {
+                Console.WriteLine($"{Red("Your account has been banned.")}");
+            }
+        }
         else if ((int)registerResponse.StatusCode == 429)
         {
             var errorContent = await registerResponse.Content.ReadAsStringAsync();
@@ -114,6 +134,15 @@ try
                 if (line?.StartsWith("data: ") == true)
                 {
                     var message = line.Substring(6); // Remove "data: " prefix
+
+                    // Check if this is a kick message
+                    if (message.StartsWith("KICKED:"))
+                    {
+                        var kickReason = message.Substring(7);
+                        Console.WriteLine($"\n{Red(kickReason)}");
+                        Console.WriteLine($"{Red("Connection terminated. Press any key to exit...")}");
+                        Environment.Exit(0);
+                    }
 
                     // Clear current line, display message, redisplay prompt
                     var savedInput = currentInput;
