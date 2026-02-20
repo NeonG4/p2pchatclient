@@ -10,6 +10,12 @@ const string serverUrl = "https://p2psignalserver.onrender.com/";
 const int localPort = 6000;
 var currentInput = "";
 
+// Color preferences
+var usernameColor = "green";
+var messageColor = "white";
+var commandColor = "darkgrey";
+var errorColor = "red";
+
 Console.Write("Enter your username: ");
 var myId = Console.ReadLine()!.Trim();
 
@@ -68,7 +74,7 @@ try
     {
         if (registerResponse.StatusCode == System.Net.HttpStatusCode.Unauthorized)
         {
-            Console.WriteLine($"{Red("Incorrect password. Please try again.")}");
+            Console.WriteLine($"{GetColor(errorColor)("Incorrect password. Please try again.")}");
         }
         else if (registerResponse.StatusCode == System.Net.HttpStatusCode.Forbidden)
         {
@@ -78,16 +84,16 @@ try
                 var errorJson = System.Text.Json.JsonDocument.Parse(errorContent);
                 if (errorJson.RootElement.TryGetProperty("Error", out var errorMsg))
                 {
-                    Console.WriteLine($"{Red(errorMsg.GetString()!)}");
+                    Console.WriteLine($"{GetColor(errorColor)(errorMsg.GetString()!)}");
                 }
                 else
                 {
-                    Console.WriteLine($"{Red("Your account has been banned.")}");
+                    Console.WriteLine($"{GetColor(errorColor)("Your account has been banned.")}");
                 }
             }
             catch
             {
-                Console.WriteLine($"{Red("Your account has been banned.")}");
+                Console.WriteLine($"{GetColor(errorColor)("Your account has been banned.")}");
             }
         }
         else if ((int)registerResponse.StatusCode == 429)
@@ -98,26 +104,41 @@ try
                 var errorJson = System.Text.Json.JsonDocument.Parse(errorContent);
                 if (errorJson.RootElement.TryGetProperty("Error", out var errorMsg))
                 {
-                    Console.WriteLine($"{Red(errorMsg.GetString()!)}");
+                    Console.WriteLine($"{GetColor(errorColor)(errorMsg.GetString()!)}");
                 }
                 else
                 {
-                    Console.WriteLine($"{Red("Too many account creations. Please try again later.")}");
+                    Console.WriteLine($"{GetColor(errorColor)("Too many account creations. Please try again later.")}");
                 }
             }
             catch
             {
-                Console.WriteLine($"{Red("Too many account creations. Please try again later.")}");
+                Console.WriteLine($"{GetColor(errorColor)("Too many account creations. Please try again later.")}");
             }
         }
         else
         {
-            Console.WriteLine($"{Red($"Failed to connect: {registerResponse.StatusCode}")}");
+            Console.WriteLine($"{GetColor(errorColor)($"Failed to connect: {registerResponse.StatusCode}")}");
         }
         return;
     }
-    
-    Console.WriteLine($"{Blue($"Connected as {Green(myId)}")}\n");
+
+    // Parse color preferences from server
+    var registerContent = await registerResponse.Content.ReadAsStringAsync();
+    try
+    {
+        var registerJson = System.Text.Json.JsonDocument.Parse(registerContent);
+        if (registerJson.RootElement.TryGetProperty("Colors", out var colors))
+        {
+            if (colors.TryGetProperty("Username", out var un)) usernameColor = un.GetString() ?? "green";
+            if (colors.TryGetProperty("Message", out var msg)) messageColor = msg.GetString() ?? "white";
+            if (colors.TryGetProperty("Command", out var cmd)) commandColor = cmd.GetString() ?? "darkgrey";
+            if (colors.TryGetProperty("Error", out var err)) errorColor = err.GetString() ?? "red";
+        }
+    }
+    catch { }
+
+    Console.WriteLine($"{Blue($"Connected as {GetColor(usernameColor)(myId)}")}\n");
 
     // Start listening for server-relayed messages
     _ = Task.Run(async () =>
@@ -135,12 +156,28 @@ try
                 {
                     var message = line.Substring(6); // Remove "data: " prefix
 
+                    // Check if this is a color update
+                    if (message.StartsWith("COLOR_UPDATE:"))
+                    {
+                        try
+                        {
+                            var colorJson = message.Substring(13);
+                            var colors = System.Text.Json.JsonDocument.Parse(colorJson);
+                            if (colors.RootElement.TryGetProperty("Username", out var un)) usernameColor = un.GetString() ?? "green";
+                            if (colors.RootElement.TryGetProperty("Message", out var msg)) messageColor = msg.GetString() ?? "white";
+                            if (colors.RootElement.TryGetProperty("Command", out var cmd)) commandColor = cmd.GetString() ?? "darkgrey";
+                            if (colors.RootElement.TryGetProperty("Error", out var err)) errorColor = err.GetString() ?? "red";
+                        }
+                        catch { }
+                        continue;
+                    }
+
                     // Check if this is a kick message
                     if (message.StartsWith("KICKED:"))
                     {
                         var kickReason = message.Substring(7);
-                        Console.WriteLine($"\n{Red(kickReason)}");
-                        Console.WriteLine($"{Red("Connection terminated. Press any key to exit...")}");
+                        Console.WriteLine($"\n{GetColor(errorColor)(kickReason)}");
+                        Console.WriteLine($"{GetColor(errorColor)("Connection terminated. Press any key to exit...")}");
                         Environment.Exit(0);
                     }
 
@@ -149,8 +186,16 @@ try
                     var clearLine = "\r" + new string(' ', Math.Min(Console.WindowWidth - 1, savedInput.Length + 10)) + "\r";
 
                     Console.Write(clearLine);
-                    Console.WriteLine($"{Green(message.Split(':')[0])}: {string.Join(":", message.Split(':').Skip(1))}");
-                    Console.Write($"{DarkGrey(">")} {savedInput}");
+                    var msgParts = message.Split(':', 2);
+                    if (msgParts.Length == 2)
+                    {
+                        Console.WriteLine($"{GetColor(usernameColor)(msgParts[0])}: {GetColor(messageColor)(msgParts[1].TrimStart())}");
+                    }
+                    else
+                    {
+                        Console.WriteLine(message);
+                    }
+                    Console.Write($"{GetColor(commandColor)(">")} {savedInput}");
                 }
             }
         }
@@ -171,12 +216,12 @@ catch (Exception ex)
 
 
 
-Console.WriteLine($"{DarkGrey("Type /help for commands")}");
+Console.WriteLine($"{GetColor(commandColor)("Type /help for commands")}");
 Console.WriteLine();
 
 while (true)
 {
-    Console.Write($"{DarkGrey(">")} ");
+    Console.Write($"{GetColor(commandColor)(">")} ");
     currentInput = "";
     
     // Read input character by character to track current input
@@ -227,7 +272,7 @@ while (true)
         {
             if (string.IsNullOrWhiteSpace(body))
             {
-                Console.WriteLine($"{DarkGrey("[Usage: /say <message>]")}");
+                Console.WriteLine($"{GetColor(commandColor)("[Usage: /say <message>]")}");
                 continue;
             }
 
@@ -245,12 +290,12 @@ while (true)
             var cmdResponse = await response.Content.ReadFromJsonAsync<CommandResponse>();
             if (cmdResponse != null)
             {
-                Console.WriteLine($"{DarkGrey(cmdResponse.Message)}");
+                Console.WriteLine($"{GetColor(commandColor)(cmdResponse.Message)}");
             }
         }
         else
         {
-            Console.WriteLine($"{Red($"Error: Server returned {response.StatusCode}")}");
+            Console.WriteLine($"{GetColor(errorColor)($"Error: Server returned {response.StatusCode}")}");
         }
     }
     else
@@ -266,6 +311,23 @@ static string Green(string text) => $"\x1b[32m{text}\x1b[0m";
 static string Blue(string text) => $"\x1b[34m{text}\x1b[0m";
 static string DarkGrey(string text) => $"\x1b[90m{text}\x1b[0m";
 static string Red(string text) => $"\x1b[31m{text}\x1b[0m";
+
+static Func<string, string> GetColor(string colorName)
+{
+    return colorName.ToLower() switch
+    {
+        "black" => text => $"\x1b[30m{text}\x1b[0m",
+        "red" => text => $"\x1b[31m{text}\x1b[0m",
+        "green" => text => $"\x1b[32m{text}\x1b[0m",
+        "yellow" => text => $"\x1b[33m{text}\x1b[0m",
+        "blue" => text => $"\x1b[34m{text}\x1b[0m",
+        "magenta" => text => $"\x1b[35m{text}\x1b[0m",
+        "cyan" => text => $"\x1b[36m{text}\x1b[0m",
+        "white" => text => $"\x1b[37m{text}\x1b[0m",
+        "darkgrey" => text => $"\x1b[90m{text}\x1b[0m",
+        _ => text => text
+    };
+}
 
 public class PeerInfo
 {

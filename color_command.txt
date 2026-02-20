@@ -1,0 +1,67 @@
+
+        case "/color":
+            if (!users.TryGetValue(peerId, out var colorUser))
+            {
+                return new CommandResponse { Message = "User not found.", Person = "Server" };
+            }
+
+            if (string.IsNullOrWhiteSpace(body))
+            {
+                return new CommandResponse 
+                { 
+                    Message = $"""
+Current colors:
+Username: {colorUser.Colors.Username}
+Message: {colorUser.Colors.Message}
+Command: {colorUser.Colors.Command}
+Error: {colorUser.Colors.Error}
+
+Usage: /color <element> <color>
+Elements: username, message, command, error
+Colors: black, red, green, yellow, blue, magenta, cyan, white, darkgrey
+""", 
+                    Person = "Server" 
+                };
+            }
+
+            var colorParts = body.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+            if (colorParts.Length < 2)
+            {
+                return new CommandResponse { Message = "Usage: /color <element> <color>", Person = "Server" };
+            }
+
+            var element = colorParts[0].ToLower();
+            var color = colorParts[1].ToLower();
+
+            var validColors = new[] { "black", "red", "green", "yellow", "blue", "magenta", "cyan", "white", "darkgrey" };
+            if (!validColors.Contains(color))
+            {
+                return new CommandResponse { Message = $"Invalid color. Valid colors: {string.Join(", ", validColors)}", Person = "Server" };
+            }
+
+            switch (element)
+            {
+                case "username":
+                    colorUser.Colors.Username = color;
+                    break;
+                case "message":
+                    colorUser.Colors.Message = color;
+                    break;
+                case "command":
+                    colorUser.Colors.Command = color;
+                    break;
+                case "error":
+                    colorUser.Colors.Error = color;
+                    break;
+                default:
+                    return new CommandResponse { Message = "Invalid element. Valid elements: username, message, command, error", Person = "Server" };
+            }
+
+            // Send updated colors to client
+            if (messageQueues.TryGetValue(peerId, out var colorQueue))
+            {
+                colorQueue.Enqueue($"COLOR_UPDATE:{System.Text.Json.JsonSerializer.Serialize(colorUser.Colors)}");
+            }
+
+            Console.WriteLine($"[COLOR] {peerId} changed {element} color to {color}");
+            return new CommandResponse { Message = $"Changed {element} color to {color}.", Person = "Server" };
